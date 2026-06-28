@@ -9,11 +9,44 @@ void SemanticChecker::check(TranslationUnit* unit) {
 #define UNIMPL visit
 #define VISIT_IMPL(type) void SemanticChecker::visit(type* node) { (void)node; }
 
-VISIT_IMPL(ConstantExpr)
-VISIT_IMPL(IdentifierExpr)
+void SemanticChecker::visit(ConstantExpr* node) {
+    if (node->tokenKind == TokenKind::TK_INTCONST) node->ty = types_.intType();
+    else if (node->tokenKind == TokenKind::TK_FLOATCONST) node->ty = types_.floatType();
+    else if (node->tokenKind == TokenKind::TK_DOUBLECONST) node->ty = types_.doubleType();
+    else node->ty = types_.intType();
+}
+
+void SemanticChecker::visit(IdentifierExpr* node) {
+    Symbol* sym = syms_.lookupID(node->name);
+    if (sym) {
+        node->ty = sym->ty;
+        node->lvalue = true;
+    } else {
+        diag_.error(node->loc, std::string("undeclared identifier: ") + node->name);
+        node->ty = types_.intType();
+    }
+}
+
 VISIT_IMPL(StringExpr)
+
 VISIT_IMPL(UnaryExpr)
-VISIT_IMPL(BinaryExpr)
+
+void SemanticChecker::visit(BinaryExpr* node) {
+    if (node->left) node->left->accept(*this);
+    if (node->right) node->right->accept(*this);
+    
+    if (node->left && node->right && node->left->ty && node->right->ty) {
+        if (node->left->ty->isArith() && node->right->ty->isArith()) {
+            node->ty = types_.commonRealType(node->left->ty, node->right->ty);
+            if (!node->ty) node->ty = types_.intType();
+        } else {
+            node->ty = types_.intType();
+        }
+    } else {
+        node->ty = types_.intType();
+    }
+}
+
 VISIT_IMPL(ConditionalExpr)
 VISIT_IMPL(CastExpr)
 VISIT_IMPL(CallExpr)
@@ -21,25 +54,71 @@ VISIT_IMPL(IndexExpr)
 VISIT_IMPL(MemberExpr)
 VISIT_IMPL(PtrMemberExpr)
 VISIT_IMPL(PostfixExpr)
-VISIT_IMPL(AssignExpr)
+
+void SemanticChecker::visit(AssignExpr* node) {
+    if (node->left) node->left->accept(*this);
+    if (node->right) node->right->accept(*this);
+    
+    if (node->left && !node->left->lvalue) {
+        diag_.error(node->loc, "lvalue required as left operand of assignment");
+    }
+    if (node->left) node->ty = node->left->ty;
+}
+
 VISIT_IMPL(CommaExpr)
-VISIT_IMPL(ExprStmt)
+
+void SemanticChecker::visit(ExprStmt* node) {
+    if (node->expr) node->expr->accept(*this);
+}
+
 VISIT_IMPL(LabelStmt)
 VISIT_IMPL(CaseStmt)
 VISIT_IMPL(DefaultStmt)
-VISIT_IMPL(IfStmt)
+
+void SemanticChecker::visit(IfStmt* node) {
+    if (node->expr) node->expr->accept(*this);
+    if (node->thenStmt) node->thenStmt->accept(*this);
+    if (node->elseStmt) node->elseStmt->accept(*this);
+}
+
 VISIT_IMPL(SwitchStmt)
-VISIT_IMPL(WhileStmt)
-VISIT_IMPL(DoStmt)
-VISIT_IMPL(ForStmt)
+
+void SemanticChecker::visit(WhileStmt* node) {
+    if (node->expr) node->expr->accept(*this);
+    if (node->stmt) node->stmt->accept(*this);
+}
+
+void SemanticChecker::visit(DoStmt* node) {
+    if (node->stmt) node->stmt->accept(*this);
+    if (node->expr) node->expr->accept(*this);
+}
+
+void SemanticChecker::visit(ForStmt* node) {
+    if (node->initExpr) node->initExpr->accept(*this);
+    if (node->expr) node->expr->accept(*this);
+    if (node->incrExpr) node->incrExpr->accept(*this);
+    if (node->stmt) node->stmt->accept(*this);
+}
 VISIT_IMPL(GotoStmt)
 VISIT_IMPL(BreakStmt)
 VISIT_IMPL(ContinueStmt)
-VISIT_IMPL(ReturnStmt)
+
+void SemanticChecker::visit(ReturnStmt* node) {
+    if (node->expr) node->expr->accept(*this);
+}
+
 
 void SemanticChecker::visit(CompoundStmt* node) {
-    (void)node;
+    syms_.enterScope();
+    for (auto* decl = node->decls; decl; decl = decl->next) {
+        if (decl) decl->accept(*this);
+    }
+    for (auto* stmt = node->stmts; stmt; stmt = stmt->next) {
+        if (stmt) stmt->accept(*this);
+    }
+    syms_.exitScope();
 }
+
 
 void SemanticChecker::visit(TranslationUnit* node) {
     for (auto* decl = node->extDecls; decl; decl = decl->next)
@@ -47,14 +126,48 @@ void SemanticChecker::visit(TranslationUnit* node) {
 }
 
 void SemanticChecker::visit(Function* node) {
+    const char* name = "main";
+    if (node->dec) {
+        if (auto* nd = dynamic_cast<NameDeclarator*>(node->dec))
+            if (nd->id) name = nd->id;
+    }
+    if (node->fdec) {
+        if (node->fdec->id) name = node->fdec->id;
+    }
+    auto* fsym = static_cast<FunctionSymbol*>(node->fsym);
+    if (!fsym) {
+        fsym = static_cast<FunctionSymbol*>(syms_.addFunction(name, types_.intType(), 0));
+        node->fsym = fsym;
+    }
+    syms_.currentFunc = fsym;
+
+    syms_.enterScope();
     if (node->stmt) node->stmt->accept(*this);
+    syms_.exitScope();
+    
+    syms_.currentFunc = nullptr;
 }
 
-VISIT_IMPL(Declaration)
+
+
+void SemanticChecker::visit(Declaration* node) {
+    for (auto* dec = node->initDecs; dec; dec = dec->next) {
+        if (dec) dec->accept(*this);
+    }
+}
+
 VISIT_IMPL(Specifiers)
 VISIT_IMPL(TypeName)
-VISIT_IMPL(InitDeclarator)
+
+void SemanticChecker::visit(InitDeclarator* node) {
+    if (node->init) node->init->accept(*this);
+    if (node->dec && node->dec->id) {
+        syms_.addVariable(node->dec->id, types_.intType(), 0);
+    }
+}
+
 VISIT_IMPL(Initializer)
+
 VISIT_IMPL(ParameterDeclaration)
 VISIT_IMPL(ParameterTypeList)
 VISIT_IMPL(EnumSpecifier)

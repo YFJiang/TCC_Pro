@@ -266,6 +266,7 @@ void IRGenerator::translateBranch(Expr* expr, BBlock* trueBB, BBlock* falseBB) {
             default: oc = OpCode::JE; break;
             }
             genBranch(bin->left->ty, trueBB, oc, src1, src2);
+            genJump(falseBB);
             return;
         }
         default: break;
@@ -275,12 +276,15 @@ void IRGenerator::translateBranch(Expr* expr, BBlock* trueBB, BBlock* falseBB) {
         if (u->op == OpKind::OP_NOT) {
             auto* src1 = translateExpr(u->operand);
             genBranch(u->operand->ty, falseBB, OpCode::JNZ, src1, nullptr);
+            genJump(trueBB);
             return;
         }
     }
     if (auto* c = dynamic_cast<ConstantExpr*>(expr)) {
         if (!(c->value.i[0] == 0 && c->value.i[1] == 0))
             genJump(trueBB);
+        else
+            genJump(falseBB);
         return;
     }
     // Default: evaluate and branch on result
@@ -288,8 +292,11 @@ void IRGenerator::translateBranch(Expr* expr, BBlock* trueBB, BBlock* falseBB) {
     if (src1 && src1->kind == SK_Constant) {
         if (!(src1->val.i[0] == 0 && src1->val.i[1] == 0))
             genJump(trueBB);
+        else
+            genJump(falseBB);
     } else {
         genBranch(expr->ty, trueBB, OpCode::JNZ, src1, nullptr);
+        genJump(falseBB);
     }
 }
 
